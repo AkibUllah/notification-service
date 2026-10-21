@@ -1,0 +1,51 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://notify:notify@db:5432/notify
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-change-me}
+      WORKER_ENABLED: "false"     # the worker service below does the sending
+      PUBLIC_BASE_URL: http://localhost:8000
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build: .
+    command: ["python", "-m", "notifications.worker"]
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://notify:notify@db:5432/notify
+      WORKER_POLL_SECONDS: "2"
+      EMAIL_PROVIDERS: console
+      SMS_PROVIDERS: console
+      PUSH_PROVIDERS: file
+      PUSH_FILE_PATH: /srv/notify/outbox/push.jsonl
+    volumes:
+      - notify-outbox:/srv/notify/outbox
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: notify
+      POSTGRES_PASSWORD: notify
+      POSTGRES_DB: notify
+    volumes:
+      - notify-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notify -d notify"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  notify-pgdata:
+  notify-outbox:
