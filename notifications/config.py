@@ -2,14 +2,16 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from notifications.core.retry import parse_schedule
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore", populate_by_name=True
+    )
 
     app_env: str = Field(default="development", pattern="^(development|test|staging|production)$")
     log_level: str = "INFO"
@@ -47,13 +49,27 @@ class Settings(BaseSettings):
     fcm_project_id: str | None = None
     fcm_access_token: str | None = None
 
-    public_base_url: str = "http://localhost:8000"
+    # Render publishes the service URL as RENDER_EXTERNAL_URL; an explicit PUBLIC_BASE_URL wins.
+    public_base_url: str = Field(
+        default="http://localhost:8000",
+        validation_alias=AliasChoices("PUBLIC_BASE_URL", "RENDER_EXTERNAL_URL", "public_base_url"),
+    )
     webhook_timeout_seconds: float = Field(default=5.0, gt=0)
 
     @field_validator("retry_schedule_seconds")
     @classmethod
     def _valid_schedule(cls, value: str) -> str:
         parse_schedule(value)
+        return value
+
+    @field_validator("database_url")
+    @classmethod
+    def _normalise_database_url(cls, value: str) -> str:
+        """Managed Postgres (Render, Heroku) hands out ``postgres://`` or ``postgresql://`` URLs;
+        SQLAlchemy needs the installed psycopg 3 driver spelled out."""
+        for prefix in ("postgres://", "postgresql://"):
+            if value.startswith(prefix):
+                return "postgresql+psycopg://" + value[len(prefix) :]
         return value
 
     @property
