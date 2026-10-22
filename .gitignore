@@ -31,3 +31,7 @@ htmlcov/
 
 # Local provider outboxes
 *.jsonl
+
+# Exported schema and Codespaces demo tenant key
+/openapi.json
+.demo-tenant.txt

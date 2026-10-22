@@ -8,6 +8,15 @@ A multi-tenant notification service for email, SMS, push, in-app and webhook cha
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
+## Try it live
+
+| | |
+|---|---|
+| API reference | https://akibullah.github.io/notification-service/ — Swagger UI built from the exported OpenAPI document (static; no backend behind it) |
+| Run in your browser | [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/AkibUllah/notification-service?quickstart=1) — starts API + worker + PostgreSQL with `docker compose`, creates tenant "Dhaka Grocers" (key in `.demo-tenant.txt`), user `u-42`, an in-app template and sends one notification; open forwarded port 8000 at `/docs` and read `GET /v1/inbox/u-42` with the tenant key (admin key `change-me`). |
+| One-click deploy | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/AkibUllah/notification-service) — `render.yaml` provisions the web service (worker in-process) and a free PostgreSQL; `ADMIN_API_KEY` is generated. |
+| Local | `docker compose up` (see Quick Start) |
+
 ## Why this exists
 
 Every product I have worked on grew the same tangle: an `send_email()` helper here, an SMS aggregator call there, a push token table nobody cleaned up, and a customer who got the same "order shipped" message four times at 2am because a retry loop had no memory. Bangladesh adds its own wrinkles: SMS is still the channel people actually read, bKash-style OTPs must go out immediately while marketing must not wake anyone, and templates need a Bangla variant that is not an afterthought. This service puts all of that behind one `POST /v1/notifications`: the caller says *what* happened and to *whom*; preferences, templates, channel fallbacks, timing and retries are the service's job.
