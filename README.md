@@ -4,6 +4,8 @@
 A multi-tenant notification service for email, SMS, push, in-app and webhook channels: versioned Jinja2 templates in English and Bangla, per-category preferences with quiet hours (Asia/Dhaka aware) and hourly/daily digests, idempotent intake with per-tenant rate limits, an asyncio worker with priority queues, provider fallback chains, retries with backoff and dead letters, signed delivery-status webhooks, and a realtime in-app inbox over Server-Sent Events.
 
 [![CI](https://github.com/AkibUllah/notification-service/actions/workflows/ci.yml/badge.svg)](https://github.com/AkibUllah/notification-service/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/AkibUllah/notification-service/actions/workflows/codeql.yml/badge.svg)](https://github.com/AkibUllah/notification-service/actions/workflows/codeql.yml)
+[![Release](https://img.shields.io/github/v/release/AkibUllah/notification-service)](https://github.com/AkibUllah/notification-service/releases)
 ![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -16,6 +18,16 @@ A multi-tenant notification service for email, SMS, push, in-app and webhook cha
 | Run in your browser | [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/AkibUllah/notification-service?quickstart=1) — starts API + worker + PostgreSQL with `docker compose`, creates tenant "Dhaka Grocers" (key in `.demo-tenant.txt`), user `u-42`, an in-app template and sends one notification; open forwarded port 8000 at `/docs` and read `GET /v1/inbox/u-42` with the tenant key (admin key `change-me`). |
 | One-click deploy | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/AkibUllah/notification-service) — `render.yaml` provisions the web service (worker in-process) and a free PostgreSQL; `ADMIN_API_KEY` is generated. |
 | Local | `docker compose up` (see Quick Start) |
+
+## Screenshots
+
+![Sending a notification](docs/images/send-session.png)
+
+*A real session against a local API with the in-process worker: one `POST /v1/notifications` fans out to in-app and SMS, the replay with the same idempotency key returns `200` + `X-Idempotent-Replay`, the inbox message is rendered from the Bangla template because the user's locale is `bn`, and a template referencing an undeclared variable is rejected.*
+
+![API reference](docs/images/api-reference.png)
+
+*The admin and tenant endpoints in the [live API reference](https://akibullah.github.io/notification-service/).*
 
 ## Why this exists
 
@@ -184,13 +196,13 @@ notifications/
 │   ├── worker.py           # process_once, retries, dead letters, replay, receipts
 │   ├── digests.py · inbox.py · status_webhooks.py · tenants.py · bus.py
 └── api/                    # admin.py, tenant_api.py, inbox_api.py
-tests/                      # 48 tests; FixedClock, FakeProvider chains, httpx.MockTransport receiver
+tests/                      # 55 tests; FixedClock, FakeProvider chains, httpx.MockTransport receiver
 ```
 
 ## Testing
 
 ```bash
-make test        # pytest (48 tests, in-memory SQLite, no network)
+make test        # pytest (55 tests, in-memory SQLite, no network)
 make cov         # with coverage (94% at the time of writing)
 make lint        # ruff check + format check
 ```
@@ -199,11 +211,11 @@ Covered: template contracts (undeclared / missing / unexpected variables, syntax
 
 ## Roadmap
 
-- `SELECT … FOR UPDATE SKIP LOCKED` claiming so multiple worker replicas share one PostgreSQL queue
-- Redis-backed rate limiter and inbox bus for multi-instance deployments
-- Attachments and inline images for email; rich push payloads (images, actions)
-- Per-tenant provider configuration and per-channel sending windows
-- Alembic migrations (schema is created with `create_all` today)
+- [ ] `SELECT … FOR UPDATE SKIP LOCKED` claiming so multiple worker replicas share one PostgreSQL queue (#1)
+- [ ] Redis-backed rate limiter and inbox bus for multi-instance deployments (#2)
+- [ ] Attachments and inline images for email; rich push payloads (images, actions) (#3)
+- [ ] Per-tenant provider configuration and per-channel sending windows (#4)
+- [ ] Alembic migrations (schema is created with `create_all` today) (#5)
 
 ## License
 
