@@ -202,6 +202,8 @@ def replay(session: Session, delivery: Delivery, now: datetime) -> Delivery:
     delivery.skip_reason = None
     delivery.next_attempt_at = now
     delivery.attempts = 0
+    delivery.claimed_by = None
+    delivery.lease_expires_at = None
     delivery.updated_at = now
     notification = session.get(Notification, delivery.notification_id)
     notification.status = summarize(notification)

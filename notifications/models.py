@@ -186,10 +186,14 @@ class Notification(Base):
 
 
 class Delivery(Base):
-    """One channel attempt-stream for a notification. The worker queue is `status='pending'`."""
+    """One channel attempt-stream for a notification. The worker queue is `status='pending'`;
+    a worker claims rows by moving them to `sending` with `claimed_by` and a lease."""
 
     __tablename__ = "deliveries"
-    __table_args__ = (Index("ix_deliveries_queue", "status", "priority_rank", "next_attempt_at"),)
+    __table_args__ = (
+        Index("ix_deliveries_queue", "status", "priority_rank", "next_attempt_at"),
+        Index("ix_deliveries_lease", "status", "lease_expires_at"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: new_id("dlv"))
     notification_id: Mapped[str] = mapped_column(
@@ -201,7 +205,7 @@ class Delivery(Base):
     priority_rank: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[str] = mapped_column(
         String(12), default="pending"
-    )  # pending|sent|failed|dead|skipped|digested
+    )  # pending|sending|sent|failed|dead|skipped|digested
     skip_reason: Mapped[str | None] = mapped_column(String(60))
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     next_attempt_at: Mapped[datetime | None]
@@ -210,6 +214,8 @@ class Delivery(Base):
     rendered_subject: Mapped[str | None] = mapped_column(String(500))
     rendered_body: Mapped[str | None] = mapped_column(Text)
     last_error: Mapped[str | None] = mapped_column(Text)
+    claimed_by: Mapped[str | None] = mapped_column(String(80))  # "<worker id>#<claim token>"
+    lease_expires_at: Mapped[datetime | None]
     receipt_status: Mapped[str | None] = mapped_column(String(20))  # delivered|bounced|read|...
     sent_at: Mapped[datetime | None]
     created_at: Mapped[datetime]
