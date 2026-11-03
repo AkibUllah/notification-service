@@ -38,3 +38,33 @@ def test_explicit_public_base_url_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PUBLIC_BASE_URL", "https://notify.example")
     assert Settings(_env_file=None).public_base_url == "https://notify.example"
     assert Settings(_env_file=None, public_base_url="http://kw").public_base_url == "http://kw"
+
+
+def test_worker_id_defaults_to_host_and_pid(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("WORKER_ID", raising=False)
+    monkeypatch.setattr("socket.gethostname", lambda: "notify-worker-7")
+    monkeypatch.setattr("os.getpid", lambda: 4321)
+    settings = Settings(_env_file=None)
+    assert settings.worker_id == "notify-worker-7-4321"
+    assert settings.worker_lease_seconds == 300
+
+
+def test_worker_id_and_lease_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WORKER_ID", "worker-b")
+    monkeypatch.setenv("WORKER_LEASE_SECONDS", "45")
+    settings = Settings(_env_file=None)
+    assert (settings.worker_id, settings.worker_lease_seconds) == ("worker-b", 45)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"worker_id": ""},
+        {"worker_id": "has space"},
+        {"worker_id": "x" * 65},
+        {"worker_lease_seconds": 0},
+    ],
+)
+def test_invalid_worker_settings_are_rejected(overrides: dict) -> None:
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, **overrides)
