@@ -138,3 +138,16 @@ def release(session: Session, token: str, delivery_ids: list[str], now: datetime
     )
     session.commit()
     return result.rowcount
+
+
+def expired(session: Session, now: datetime, limit: int) -> list[Delivery]:
+    """Claimed rows whose lease ran out, locked (PostgreSQL) so only one worker reclaims each."""
+    stmt = (
+        select(Delivery)
+        .where(Delivery.status == "sending", Delivery.lease_expires_at <= now)
+        .order_by(Delivery.lease_expires_at, Delivery.id)
+        .limit(limit)
+    )
+    if supports_skip_locked(session):
+        stmt = stmt.with_for_update(skip_locked=True)
+    return list(session.scalars(stmt.execution_options(populate_existing=True)))

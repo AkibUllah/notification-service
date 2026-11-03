@@ -32,6 +32,7 @@ class RunStats:
     retried: int = 0
     dead: int = 0
     lease_lost: int = 0
+    reclaimed: int = 0
     by_channel: dict[str, int] = field(default_factory=dict)
 
     def as_dict(self) -> dict:
@@ -41,6 +42,7 @@ class RunStats:
             "retried": self.retried,
             "dead": self.dead,
             "lease_lost": self.lease_lost,
+            "reclaimed": self.reclaimed,
             "by_channel": self.by_channel,
         }
 
@@ -148,6 +150,7 @@ async def process_once(
     worker_id: str | None = None,
 ) -> RunStats:
     stats = RunStats()
+    await reclaim_expired(session, ctx, now, stats)
     claim = claims.claim_due(
         session,
         now,
@@ -157,6 +160,40 @@ async def process_once(
     )
     await process_claim(session, ctx, claim, now, stats)
     return stats
+
+
+async def reclaim_expired(
+    session: Session, ctx: AppContext, now: datetime, stats: RunStats
+) -> None:
+    """Return deliveries whose lease expired (their worker crashed or stalled) to the queue.
+
+    The lost attempt counts as a retryable failure: the delivery waits for the usual backoff,
+    or is dead-lettered once it has used MAX_ATTEMPTS, so a message that keeps crashing
+    workers cannot loop forever."""
+    rows = claims.expired(session, now, ctx.settings.worker_batch_size)
+    dead: list[Delivery] = []
+    for delivery in rows:
+        owner = delivery.claimed_by
+        delivery.attempts += 1
+        delivery.updated_at = now
+        delivery.claimed_by = None
+        delivery.lease_expires_at = None
+        outcome = _fail(
+            delivery, f"lease expired (claimed by {owner})", retryable=True, ctx=ctx, now=now
+        )
+        notification = session.get(Notification, delivery.notification_id)
+        notification.status = summarize(notification)
+        notification.updated_at = now
+        if outcome == "dead":
+            dead.append(delivery)
+    session.commit()
+    if rows:
+        log.warning("reclaimed %d deliveries with expired leases", len(rows))
+    stats.reclaimed += len(rows)
+    stats.dead += len(dead)
+    for delivery in dead:
+        tenant = session.get(Tenant, delivery.tenant_id)
+        await status_webhooks.notify(ctx, tenant, "delivery.dead", delivery, now)
 
 
 async def process_claim(

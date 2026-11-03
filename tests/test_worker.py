@@ -46,6 +46,7 @@ async def test_sends_all_channels_and_records_everything(
         "retried": 0,
         "dead": 0,
         "lease_lost": 0,
+        "reclaimed": 0,
         "by_channel": {"email": 1, "sms": 1, "push": 1, "in_app": 1, "webhook": 1},
     }
     session.refresh(n)

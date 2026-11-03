@@ -223,6 +223,7 @@ class WorkerRunOut(BaseModel):
     retried: int
     dead: int
     lease_lost: int
+    reclaimed: int
     by_channel: dict[str, int]
     digests_flushed: int
 
