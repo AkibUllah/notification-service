@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import os
+import socket
 from functools import lru_cache
 
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from notifications.core.retry import parse_schedule
+
+
+def default_worker_id() -> str:
+    """`<hostname>-<pid>`: unique per process, and readable in `claimed_by` when debugging."""
+    return f"{socket.gethostname()[:50]}-{os.getpid()}"
 
 
 class Settings(BaseSettings):
@@ -21,6 +28,11 @@ class Settings(BaseSettings):
     worker_enabled: bool = True
     worker_poll_seconds: float = Field(default=2.0, gt=0)
     worker_batch_size: int = Field(default=50, ge=1, le=1000)
+    # Identifies this process in `deliveries.claimed_by`; must differ between worker replicas.
+    worker_id: str = Field(default_factory=default_worker_id, pattern=r"^[A-Za-z0-9._:-]{1,64}$")
+    # How long a claimed batch belongs to this worker. Must exceed the time a full batch takes;
+    # after it expires another worker may reclaim the rows and this worker's results are dropped.
+    worker_lease_seconds: float = Field(default=300.0, gt=0)
     retry_schedule_seconds: str = "30,120,600,1800"
     max_attempts: int = Field(default=5, ge=1, le=50)
     digest_sweep_seconds: float = Field(default=30.0, gt=0)
