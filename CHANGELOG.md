@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Multi-worker delivery claiming (#1): workers claim due deliveries with `SELECT … FOR UPDATE SKIP LOCKED` on PostgreSQL and mark them `sending` under a lease (`claimed_by`, `lease_expires_at`); results are written back only while the claim is held, so a worker whose lease expired cannot overwrite another worker's result; deliveries from a crashed worker are reclaimed after the lease and the lost attempt counts toward `MAX_ATTEMPTS`. SQLite keeps the unlocked query for its single worker.
+- `WORKER_ID` (default `<hostname>-<pid>`) and `WORKER_LEASE_SECONDS` (default 300) settings.
+- `claimed_by` and `lease_expires_at` on delivery responses; `lease_lost` and `reclaimed` counters in `POST /v1/worker/run-once`.
+- PostgreSQL concurrency tests (skipped without `TEST_DATABASE_URL`) and a CI job that runs them against a `postgres:16` service.
+
 - CodeQL analysis for Python and GitHub Actions on pushes and pull requests to `main` and on a weekly schedule.
 - Dependabot version updates for pip, Docker and GitHub Actions, with minor and patch updates grouped per ecosystem.
 - README screenshots: a send session against a local API and the API reference.
@@ -17,7 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - CI workflow runs with a read-only `GITHUB_TOKEN`.
-- Test count in the README updated to 55.
+- Test count in the README updated to 55, then to 73 with the claiming tests.
+- Notifications whose deliveries are being sent (`sending`) report `queued`.
+
+### Upgrade notes
+
+- The schema is still created with `create_all`, which does not add columns to existing tables. Before deploying to an existing PostgreSQL database run:
+  `ALTER TABLE deliveries ADD COLUMN claimed_by VARCHAR(80), ADD COLUMN lease_expires_at TIMESTAMP; CREATE INDEX ix_deliveries_lease ON deliveries (status, lease_expires_at);`
 
 ## [0.1.0] - 2026-10-25
 

@@ -1,7 +1,8 @@
 """Standalone worker: `python -m notifications.worker` (or the `notifications-worker` script).
 
-Runs the same loop as the in-process worker; set WORKER_ENABLED=false on the API when you
-run this separately so deliveries are not processed twice.
+Runs the same loop as the in-process worker. On PostgreSQL any number of these can run side
+by side: each claims its own batches (see `services.claims`), so set WORKER_ENABLED=false on
+the API only to keep sending out of the web process, not for correctness.
 """
 
 from __future__ import annotations
