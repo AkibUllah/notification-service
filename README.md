@@ -41,6 +41,7 @@ Every product I have worked on grew the same tangle: an `send_email()` helper he
 - Preferences per category with a `*` catch-all: channel opt-in/out, quiet hours in the user's timezone (overnight windows handled), hourly/daily digests; high priority bypasses quiet hours and digests (OTPs, fraud alerts); one-click unsubscribe tokens, scoped to a category and/or channel
 - Intake: single and bulk `POST /v1/notifications`, idempotency keys (replay returns the original with `200` + `X-Idempotent-Replay`), sliding-window rate limit per tenant with `Retry-After`, template resolution at accept time so a typo fails the request, not the worker
 - Worker: due deliveries by priority then time, retries at 30s/2m/10m/30m (configurable), dead letters after `MAX_ATTEMPTS`, non-retryable failures (bad address, unregistered push token, render error) go straight to dead letters; replay endpoint; runs in-process or as `python -m notifications.worker`
+- Multiple worker replicas on one PostgreSQL queue: batches are claimed with `SELECT … FOR UPDATE SKIP LOCKED` under a lease (`claimed_by`, `lease_expires_at`), results are written back only while the claim is still held, and deliveries left behind by a crashed worker are reclaimed when the lease expires (the lost attempt counts toward `MAX_ATTEMPTS`)
 - Digest scheduler groups batched notifications per user, category and channel and flushes them at the top of the hour or at 09:00 local, using the tenant's `digest` template or a built-in bilingual list
 - Delivery status: HMAC-signed `delivery.sent` / `delivery.dead` webhooks to the tenant; inbound receipts (`delivered`, `bounced`, `read`, …) matched by provider message id
 - In-app inbox: list, unread count, mark read, and `GET /v1/inbox/{user}/stream` SSE with `ready`, `message` and `read` events
@@ -73,6 +74,7 @@ Design notes:
 
 - **Resolution happens once, at intake.** `preferences.resolve()` turns a request into per-channel decisions (send / defer / digest / skip with a reason) and the API persists one `Delivery` row per decision. The worker never has to re-derive policy, and the caller sees immediately that SMS was skipped because the user opted out.
 - **Deliveries are the queue.** `status='pending' AND next_attempt_at <= now` is the work list, ordered by priority rank then time. A quiet-hours deferral is just a delivery with `next_attempt_at` set to 08:00 local, so there is no second scheduler to keep consistent.
+- **Workers claim, then send.** A worker selects due rows with `FOR UPDATE SKIP LOCKED` (a concurrent worker skips locked rows instead of waiting or taking them too), moves them to `sending` with `claimed_by = "<WORKER_ID>#<token>"` and `lease_expires_at = now + WORKER_LEASE_SECONDS`, and commits, so row locks last milliseconds, not as long as the sends. Each result is written with `UPDATE … WHERE claimed_by = <token> AND status = 'sending'`; if the lease expired and another worker reclaimed the row, the update matches nothing and the stale result is discarded. Rows whose lease ran out go back to `pending` with the normal retry backoff, or to dead letters after `MAX_ATTEMPTS`, so a message that crashes workers cannot loop forever. If a batch outlives its lease, the worker hands the unsent rest back instead of sending it. SQLite has no row locks and runs the same query without them, which is correct for the single worker it is meant for. Delivery is at-least-once: a worker that sends and then dies before writing the result will have that delivery sent again, so `WORKER_LEASE_SECONDS` must exceed the time a full batch takes.
 - **Templates are contracts.** Declared variables are checked both when a template is saved (no undeclared references) and when it is rendered (nothing missing, nothing extra). Rendering runs in Jinja2's sandbox with `StrictUndefined`, so a typo produces an error instead of a blank in a customer's SMS.
 - **Providers are swappable and watched.** The chain records consecutive failures per provider and opens a small circuit; `/v1/providers` and `/health` expose that state. Non-retryable results stop the chain early because no other provider will fix an invalid address.
 - **Time is injected.** Quiet hours, digest windows, retry timing and rate limiting all read the app clock; tests use a `FixedClock` and the worker is driven by `process_once(now)`.
@@ -137,6 +139,18 @@ curl -sN localhost:8000/v1/inbox/u-42/stream "${T[@]}"          # SSE
 curl -s -X POST "localhost:8000/v1/worker/run-once" "${ADMIN[@]}"  # when WORKER_ENABLED=false
 ```
 
+Several workers against the compose PostgreSQL (each replica gets its own `<hostname>-<pid>` id unless `WORKER_ID` is set):
+
+```bash
+docker compose up -d --scale worker=3
+```
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `WORKER_ID` | `<hostname>-<pid>` | Written to `deliveries.claimed_by`; must differ between replicas (`[A-Za-z0-9._:-]`, up to 64 chars) |
+| `WORKER_LEASE_SECONDS` | `300` | How long a claimed batch belongs to a worker before others may reclaim it |
+| `WORKER_BATCH_SIZE` | `50` | Rows claimed per pass |
+
 Preferences and digests:
 
 ```bash
@@ -196,22 +210,27 @@ notifications/
 │   ├── worker.py           # process_once, retries, dead letters, replay, receipts
 │   ├── digests.py · inbox.py · status_webhooks.py · tenants.py · bus.py
 └── api/                    # admin.py, tenant_api.py, inbox_api.py
-tests/                      # 55 tests; FixedClock, FakeProvider chains, httpx.MockTransport receiver
+tests/                      # 73 tests (3 need PostgreSQL); FixedClock, FakeProvider chains, httpx.MockTransport receiver
 ```
 
 ## Testing
 
 ```bash
-make test        # pytest (55 tests, in-memory SQLite, no network)
+make test        # pytest (70 tests on in-memory SQLite, no network; 3 PostgreSQL tests skip)
 make cov         # with coverage (94% at the time of writing)
 make lint        # ruff check + format check
+
+# Multi-worker claiming against a disposable PostgreSQL database (tables are dropped and recreated)
+TEST_DATABASE_URL=postgresql+psycopg://notify:notify@localhost:5432/notify_test \
+  .venv/bin/pytest tests/test_postgres_claims.py
 ```
 
-Covered: template contracts (undeclared / missing / unexpected variables, syntax errors, sandbox escapes, locale fallback, versioning and deactivation); preference resolution (catch-all vs category, missing addresses, opt-outs, unsubscribe tokens); quiet hours in Asia/Dhaka including overnight windows, end-time computation, deferral and high-priority bypass; digest window keys and flush times, hourly batching flushed exactly once, tenant digest templates in Bangla, grouping per user/category/channel; provider fakes and file output, chain fallback, circuit open/recover, all-unhealthy behaviour, non-retryable short-circuit, stub configuration errors and request shapes for the BD SMS and FCM stubs; the worker end to end across all five channels, priority ordering and batch size, backoff schedule to dead letter and replay, fallback provider use, render errors, idempotency, rate limiting, quiet-hours release, receipts; and the HTTP API (auth, users, preferences, unsubscribe page, templates and preview, notification flow with idempotent replay, inbox operations, bulk partial failures, 429 handling, dead letters, provider health, inbox SSE, signed status webhooks).
+CI runs the PostgreSQL tests in a separate job with a `postgres:16` service: four workers drain 200 deliveries concurrently and every delivery must be sent exactly once, a claim must skip rows another transaction has locked without waiting, and only one worker may reclaim an expired lease.
+
+Covered: template contracts (undeclared / missing / unexpected variables, syntax errors, sandbox escapes, locale fallback, versioning and deactivation); preference resolution (catch-all vs category, missing addresses, opt-outs, unsubscribe tokens); quiet hours in Asia/Dhaka including overnight windows, end-time computation, deferral and high-priority bypass; digest window keys and flush times, hourly batching flushed exactly once, tenant digest templates in Bangla, grouping per user/category/channel; provider fakes and file output, chain fallback, circuit open/recover, all-unhealthy behaviour, non-retryable short-circuit, stub configuration errors and request shapes for the BD SMS and FCM stubs; the worker end to end across all five channels, priority ordering and batch size, backoff schedule to dead letter and replay, fallback provider use, render errors, idempotency, rate limiting, quiet-hours release, receipts; claiming (queue order and batch limits, claim tokens, guarded completion refusing a lost claim, batches handing back rows once their lease expires, crash recovery and dead-lettering after repeated lease expiry with `FixedClock`); and the HTTP API (auth, users, preferences, unsubscribe page, templates and preview, notification flow with idempotent replay, inbox operations, bulk partial failures, 429 handling, dead letters, provider health, inbox SSE, signed status webhooks).
 
 ## Roadmap
 
-- [ ] `SELECT … FOR UPDATE SKIP LOCKED` claiming so multiple worker replicas share one PostgreSQL queue (#1)
 - [ ] Redis-backed rate limiter and inbox bus for multi-instance deployments (#2)
 - [ ] Attachments and inline images for email; rich push payloads (images, actions) (#3)
 - [ ] Per-tenant provider configuration and per-channel sending windows (#4)
