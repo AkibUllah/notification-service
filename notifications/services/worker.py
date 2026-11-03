@@ -1,5 +1,8 @@
-"""The delivery worker: pick due deliveries by priority, render, send through the chain,
-retry with backoff, dead-letter after MAX_ATTEMPTS, and report status to the tenant."""
+"""The delivery worker: claim due deliveries by priority, render, send through the chain,
+retry with backoff, dead-letter after MAX_ATTEMPTS, and report status to the tenant.
+
+Claiming and the guarded write-back live in `claims`, so any number of workers can run
+against one PostgreSQL database without sending a delivery twice."""
 
 from __future__ import annotations
 
@@ -14,7 +17,7 @@ from notifications.core.channels import Channel
 from notifications.core.retry import next_attempt_at
 from notifications.models import Delivery, Notification, Tenant, User
 from notifications.providers.base import Message
-from notifications.services import inbox, status_webhooks
+from notifications.services import claims, inbox, status_webhooks
 from notifications.services.context import AppContext
 from notifications.services.errors import DomainError, NotFound
 from notifications.services.notifications import render_for, summarize
@@ -28,6 +31,7 @@ class RunStats:
     sent: int = 0
     retried: int = 0
     dead: int = 0
+    lease_lost: int = 0
     by_channel: dict[str, int] = field(default_factory=dict)
 
     def as_dict(self) -> dict:
@@ -36,23 +40,9 @@ class RunStats:
             "sent": self.sent,
             "retried": self.retried,
             "dead": self.dead,
+            "lease_lost": self.lease_lost,
             "by_channel": self.by_channel,
         }
-
-
-def due_deliveries(session: Session, now: datetime, limit: int) -> list[Delivery]:
-    return list(
-        session.scalars(
-            select(Delivery)
-            .where(
-                Delivery.status == "pending",
-                Delivery.next_attempt_at.is_not(None),
-                Delivery.next_attempt_at <= now,
-            )
-            .order_by(Delivery.priority_rank, Delivery.next_attempt_at, Delivery.id)
-            .limit(limit)
-        )
-    )
 
 
 async def deliver(session: Session, ctx: AppContext, delivery: Delivery, now: datetime) -> str:
@@ -150,20 +140,48 @@ def _fail(
 
 
 async def process_once(
-    session: Session, ctx: AppContext, now: datetime, batch_size: int | None = None
+    session: Session,
+    ctx: AppContext,
+    now: datetime,
+    batch_size: int | None = None,
+    *,
+    worker_id: str | None = None,
 ) -> RunStats:
     stats = RunStats()
-    batch = due_deliveries(session, now, batch_size or ctx.settings.worker_batch_size)
-    await process_batch(session, ctx, batch, now, stats)
+    claim = claims.claim_due(
+        session,
+        now,
+        batch_size or ctx.settings.worker_batch_size,
+        worker_id or ctx.settings.worker_id,
+        ctx.settings.worker_lease_seconds,
+    )
+    await process_claim(session, ctx, claim, now, stats)
     return stats
 
 
-async def process_batch(
-    session: Session, ctx: AppContext, batch: list[Delivery], now: datetime, stats: RunStats
+async def process_claim(
+    session: Session, ctx: AppContext, claim: claims.Claim, now: datetime, stats: RunStats
 ) -> None:
-    """Deliver each row of `batch` in order, committing after every delivery."""
-    for delivery in batch:
+    """Deliver each claimed row in order, committing after every delivery.
+
+    If the lease runs out part-way (slow providers), the rest of the batch is handed back to
+    the queue instead of being sent under a claim another worker may already hold."""
+    for index, delivery in enumerate(claim.deliveries):
+        if ctx.clock.now() >= claim.lease_expires_at:
+            rest = [d.id for d in claim.deliveries[index:]]
+            released = claims.release(session, claim.token, rest, now)
+            log.warning("claim %s: lease expired, released %d deliveries", claim.token, released)
+            return
         outcome = await deliver(session, ctx, delivery, now)
+        if not claims.complete(session, delivery, claim.token):
+            session.rollback()
+            stats.lease_lost += 1
+            log.warning(
+                "delivery %s: claim %s was lost before completion; result discarded",
+                delivery.id,
+                claim.token,
+            )
+            continue
         await _finish(session, ctx, delivery, outcome, now, stats)
 
 
