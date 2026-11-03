@@ -153,26 +153,43 @@ async def process_once(
     session: Session, ctx: AppContext, now: datetime, batch_size: int | None = None
 ) -> RunStats:
     stats = RunStats()
-    for delivery in due_deliveries(session, now, batch_size or ctx.settings.worker_batch_size):
-        outcome = await deliver(session, ctx, delivery, now)
-        stats.processed += 1
-        stats.by_channel[delivery.channel.value] = (
-            stats.by_channel.get(delivery.channel.value, 0) + 1
-        )
-        notification = session.get(Notification, delivery.notification_id)
-        notification.status = summarize(notification)
-        notification.updated_at = now
-        session.commit()
-        if outcome == "sent":
-            stats.sent += 1
-        elif outcome == "retry":
-            stats.retried += 1
-        else:
-            stats.dead += 1
-        if outcome in ("sent", "dead"):
-            tenant = session.get(Tenant, delivery.tenant_id)
-            await status_webhooks.notify(ctx, tenant, f"delivery.{outcome}", delivery, now)
+    batch = due_deliveries(session, now, batch_size or ctx.settings.worker_batch_size)
+    await process_batch(session, ctx, batch, now, stats)
     return stats
+
+
+async def process_batch(
+    session: Session, ctx: AppContext, batch: list[Delivery], now: datetime, stats: RunStats
+) -> None:
+    """Deliver each row of `batch` in order, committing after every delivery."""
+    for delivery in batch:
+        outcome = await deliver(session, ctx, delivery, now)
+        await _finish(session, ctx, delivery, outcome, now, stats)
+
+
+async def _finish(
+    session: Session,
+    ctx: AppContext,
+    delivery: Delivery,
+    outcome: str,
+    now: datetime,
+    stats: RunStats,
+) -> None:
+    stats.processed += 1
+    stats.by_channel[delivery.channel.value] = stats.by_channel.get(delivery.channel.value, 0) + 1
+    notification = session.get(Notification, delivery.notification_id)
+    notification.status = summarize(notification)
+    notification.updated_at = now
+    session.commit()
+    if outcome == "sent":
+        stats.sent += 1
+    elif outcome == "retry":
+        stats.retried += 1
+    else:
+        stats.dead += 1
+    if outcome in ("sent", "dead"):
+        tenant = session.get(Tenant, delivery.tenant_id)
+        await status_webhooks.notify(ctx, tenant, f"delivery.{outcome}", delivery, now)
 
 
 def replay(session: Session, delivery: Delivery, now: datetime) -> Delivery:
