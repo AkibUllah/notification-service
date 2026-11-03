@@ -182,7 +182,7 @@ def summarize(notification: Notification) -> str:
         return "suppressed"
     if statuses <= {"skipped", "digested"}:
         return "digested"
-    if "pending" in statuses:
+    if statuses & {"pending", "sending"}:
         return "queued"
     if "dead" in statuses or "failed" in statuses:
         return "partially_sent" if "sent" in statuses else "failed"

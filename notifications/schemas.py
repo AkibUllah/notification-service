@@ -168,6 +168,8 @@ class DeliveryOut(ORMModel):
     provider_message_id: str | None
     rendered_subject: str | None
     last_error: str | None
+    claimed_by: str | None
+    lease_expires_at: datetime | None
     receipt_status: str | None
     sent_at: datetime | None
     created_at: datetime

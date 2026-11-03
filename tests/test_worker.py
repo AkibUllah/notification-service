@@ -219,3 +219,20 @@ async def test_receipts_update_delivery(session, ctx, tenant, user, order_templa
     await process_once(session, ctx, T0)
     d = record_receipt(session, "email_primary-1", "bounced", T0 + timedelta(minutes=5))
     assert d.id == n.deliveries[0].id and d.receipt_status == "bounced"
+
+
+def test_claimed_delivery_keeps_notification_queued_and_is_not_replayable(
+    session, ctx, tenant, user, order_templates
+):
+    n = enqueue(session, ctx, tenant, user, channels=[Channel.SMS, Channel.EMAIL])
+    sms, email = sorted(n.deliveries, key=lambda d: d.channel.value != "sms")
+    sms.status, sms.claimed_by = "sending", "worker-a#0001"
+    sms.lease_expires_at = T0 + timedelta(minutes=5)
+    email.status = "sent"
+    assert notifications.summarize(n) == "queued"
+    with pytest.raises(DomainError, match="only dead, sent or skipped"):
+        replay(session, sms, T0)
+
+    sms.status = "dead"
+    replay(session, sms, T0 + timedelta(minutes=1))
+    assert sms.status == "pending" and sms.claimed_by is None and sms.lease_expires_at is None
